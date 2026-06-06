@@ -1,4 +1,3 @@
-// lib/screens/splash_screen.dart
 import 'package:flutter/material.dart';
 import 'home_screen.dart';
 
@@ -11,66 +10,109 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
-  late final AnimationController _entryController;
-  late final Animation<double> _fadeAnimation;
-  late final Animation<double> _scaleAnimation;
+  AnimationController? _entryController;
+  Animation<double>? _fadeAnimation;
+  Animation<double>? _scaleAnimation;
 
-  late final AnimationController _glowController;
-  late final Animation<double> _glowAnimation;
+  AnimationController? _glowController;
+  Animation<double>? _glowAnimation;
 
   @override
   void initState() {
     super.initState();
-    // Entry animation (fade + spring scale)
-    _entryController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    );
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _entryController,
-        curve: const Interval(0.0, 0.8, curve: Curves.easeOut),
-      ),
-    );
-    _scaleAnimation = Tween<double>(begin: 0.6, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _entryController,
-        curve: const Interval(0.0, 0.8, curve: Curves.easeOutBack),
-      ),
-    );
-    // Glowing pulse animation
-    _glowController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-    _glowAnimation = Tween<double>(begin: 12.0, end: 32.0).animate(
-      CurvedAnimation(parent: _glowController, curve: Curves.easeInOut),
-    );
-    // Start entry animation
-    _entryController.forward();
-    // Auto‑navigate after 3 seconds
-    Future.delayed(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (c, a, s) => const HomeScreen(),
-          transitionsBuilder: (c, a, s, child) => FadeTransition(opacity: a, child: child),
-          transitionDuration: const Duration(milliseconds: 600),
+    debugPrint("[SplashScreen] initState started.");
+
+    try {
+      debugPrint("[SplashScreen] Setting up _entryController...");
+      _entryController = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 1500),
+      );
+
+      _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+        CurvedAnimation(
+          parent: _entryController!,
+          curve: const Interval(0.0, 0.8, curve: Curves.easeOut),
         ),
       );
+
+      _scaleAnimation = Tween<double>(begin: 0.6, end: 1.0).animate(
+        CurvedAnimation(
+          parent: _entryController!,
+          curve: const Interval(0.0, 0.8, curve: Curves.easeOutBack),
+        ),
+      );
+
+      debugPrint("[SplashScreen] Setting up _glowController...");
+      _glowController = AnimationController(
+        vsync: this,
+        duration: const Duration(seconds: 2),
+      );
+
+      _glowAnimation = Tween<double>(begin: 12.0, end: 32.0).animate(
+        CurvedAnimation(parent: _glowController!, curve: Curves.easeInOut),
+      );
+
+      debugPrint("[SplashScreen] Initiating animations execution...");
+      _entryController!.forward();
+      _glowController!.repeat(reverse: true);
+      debugPrint("[SplashScreen] Animations started successfully.");
+    } catch (e) {
+      debugPrint("[SplashScreen] Animations setup failed: $e");
+    }
+
+    // Navigating after 3 seconds
+    debugPrint("[SplashScreen] Scheduling delayed navigation...");
+    Future.delayed(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      debugPrint("[SplashScreen] 3 seconds timer fired. Navigating to HomeScreen...");
+      try {
+        Navigator.of(context).pushReplacement(
+          PageRouteBuilder(
+            pageBuilder: (c, a, s) => const HomeScreen(),
+            transitionsBuilder: (c, a, s, child) => FadeTransition(opacity: a, child: child),
+            transitionDuration: const Duration(milliseconds: 600),
+          ),
+        );
+        debugPrint("[SplashScreen] Route navigation executed successfully via PageRouteBuilder.");
+      } catch (e) {
+        debugPrint("[SplashScreen] PageRouteBuilder navigation failed: $e. Falling back to MaterialPageRoute...");
+        try {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+          );
+          debugPrint("[SplashScreen] Fallback MaterialPageRoute executed successfully.");
+        } catch (navErr) {
+          debugPrint("[SplashScreen] Critical: All navigation attempts failed: $navErr");
+        }
+      }
     });
   }
 
   @override
   void dispose() {
-    _entryController.dispose();
-    _glowController.dispose();
+    debugPrint("[SplashScreen] dispose called.");
+    try {
+      _entryController?.dispose();
+      _glowController?.dispose();
+      debugPrint("[SplashScreen] Controllers disposed successfully.");
+    } catch (e) {
+      debugPrint("[SplashScreen] Error during controller disposal: $e");
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    debugPrint("[SplashScreen] build called.");
+    
+    // Safety check in case animation setup failed
+    final opacityAnim = _fadeAnimation ?? const AlwaysStoppedAnimation(1.0);
+    final scaleAnim = _scaleAnimation ?? const AlwaysStoppedAnimation(1.0);
+    final glowValueAnim = _glowAnimation ?? const AlwaysStoppedAnimation(20.0);
+
     return Scaffold(
+      backgroundColor: const Color(0xFF090D1A),
       body: Container(
         width: double.infinity,
         height: double.infinity,
@@ -85,24 +127,25 @@ class _SplashScreenState extends State<SplashScreen>
         child: SafeArea(
           child: Column(
             children: [
-              // Expanded central content that animates
               Expanded(
                 child: Center(
                   child: AnimatedBuilder(
-                    animation: Listenable.merge([_entryController, _glowController]),
+                    animation: Listenable.merge([
+                      if (_entryController != null) _entryController,
+                      if (_glowController != null) _glowController,
+                    ]),
                     builder: (context, _) {
                       return FadeTransition(
-                        opacity: _fadeAnimation,
+                        opacity: opacityAnim,
                         child: ScaleTransition(
-                          scale: _scaleAnimation,
+                          scale: scaleAnim,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // Glowing icon
+                              // Glowing Center App Logo
                               Stack(
                                 alignment: Alignment.center,
                                 children: [
-                                  // Pulsing outer ring
                                   Container(
                                     width: 140,
                                     height: 140,
@@ -111,13 +154,12 @@ class _SplashScreenState extends State<SplashScreen>
                                       boxShadow: [
                                         BoxShadow(
                                           color: const Color(0xFF00FFC2).withAlpha(40),
-                                          blurRadius: _glowAnimation.value + 15,
-                                          spreadRadius: _glowAnimation.value / 2,
+                                          blurRadius: glowValueAnim.value + 15,
+                                          spreadRadius: glowValueAnim.value / 2,
                                         ),
                                       ],
                                     ),
                                   ),
-                                  // Inner logo container
                                   Container(
                                     width: 110,
                                     height: 110,
@@ -131,7 +173,7 @@ class _SplashScreenState extends State<SplashScreen>
                                       boxShadow: [
                                         BoxShadow(
                                           color: const Color(0xFF00FFC2).withAlpha(60),
-                                          blurRadius: _glowAnimation.value,
+                                          blurRadius: glowValueAnim.value,
                                         ),
                                       ],
                                     ),
@@ -144,7 +186,8 @@ class _SplashScreenState extends State<SplashScreen>
                                 ],
                               ),
                               const SizedBox(height: 48),
-                              // Title
+                              
+                              // App Title
                               const Text(
                                 'UPI Payment Alert',
                                 style: TextStyle(
@@ -162,8 +205,9 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                               const SizedBox(height: 10),
+                              
                               // Subtitle
-                              Text(
+                              const Text(
                                 'Smart Voice Payment Assistant',
                                 style: TextStyle(
                                   color: Colors.white70,
@@ -180,7 +224,8 @@ class _SplashScreenState extends State<SplashScreen>
                   ),
                 ),
               ),
-              // Persistent loading indicator at the bottom
+              
+              // Persistent loading spinner at the bottom
               const Padding(
                 padding: EdgeInsets.only(bottom: 24.0),
                 child: CircularProgressIndicator(
