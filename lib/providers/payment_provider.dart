@@ -96,7 +96,6 @@ ParsedPayment? parsePayment(String message) {
   return ParsedPayment(type: type, amount: amount, accountNumber: accountNumber);
 }
 
-
 class PaymentProvider with ChangeNotifier {
   static const MethodChannel _channel = MethodChannel('com.upi.payment.alert/notification_listener');
 
@@ -109,8 +108,11 @@ class PaymentProvider with ChangeNotifier {
   bool _isVoiceAlertEnabled = true;
   double _speechRate = 0.5;
   String _language = "en-IN";
-  int _nightModeStartHour = 23;
-  int _nightModeEndHour = 7;
+  
+  // Fix 1: Default Night Mode hours to 00:00 - 00:00 (disabled)
+  int _nightModeStartHour = 0;
+  int _nightModeEndHour = 0;
+  
   bool _isNotificationPermissionGranted = false;
   bool _isListenerPermissionGranted = false;
   bool _isWakeWordEnabled = false;
@@ -123,13 +125,11 @@ class PaymentProvider with ChangeNotifier {
   // Shake / Sensors state
   DateTime? _lastShakeSpeakTime;
 
-  // Live Notification Feed State (Requirement 7)
+  // Live Notification Feed State
   final List<RawNotification> _rawFeed = [];
-  bool _isMethodChannelWorking = false; // MethodChannel verification status (Requirement 6)
+  bool _isMethodChannelWorking = false;
 
   TtsStatus _ttsStatus = TtsStatus.initializing;
-
-
 
   // Supported languages map
   final Map<String, String> _supportedLanguages = {
@@ -169,7 +169,11 @@ class PaymentProvider with ChangeNotifier {
   int get nightModeStartHour => _nightModeStartHour;
   int get nightModeEndHour => _nightModeEndHour;
   
+  // Fix 1: Active check logic where 00:00 - 00:00 means disabled (no muting)
   bool get isNightModeActive {
+    if (_nightModeStartHour == 0 && _nightModeEndHour == 0) {
+      return false;
+    }
     final now = DateTime.now();
     final hour = now.hour;
     if (_nightModeStartHour <= _nightModeEndHour) {
@@ -298,8 +302,10 @@ class PaymentProvider with ChangeNotifier {
         _isVoiceAlertEnabled = _prefs.getBool('isVoiceAlertEnabled') ?? true;
         _speechRate = _prefs.getDouble('speechRate') ?? 0.5;
         _language = _prefs.getString('language') ?? 'en-IN';
-        _nightModeStartHour = _prefs.getInt('nightModeStartHour') ?? 23;
-        _nightModeEndHour = _prefs.getInt('nightModeEndHour') ?? 7;
+        
+        // Fix 1: Load night mode settings defaulting to 0
+        _nightModeStartHour = _prefs.getInt('nightModeStartHour') ?? 0;
+        _nightModeEndHour = _prefs.getInt('nightModeEndHour') ?? 0;
         _isWakeWordEnabled = _prefs.getBool('isWakeWordEnabled') ?? false;
 
         debugPrint("[PaymentProvider] Initializing Hive History...");
@@ -321,7 +327,6 @@ class PaymentProvider with ChangeNotifier {
       try {
         debugPrint("[PaymentProvider] Setting up MethodChannel call handler...");
         _channel.setMethodCallHandler((call) async {
-          // Requirement 6: Verify MethodChannel works on active communication
           _isMethodChannelWorking = true;
           
           debugPrint("[PaymentProvider] Received MethodChannel call: ${call.method}");
@@ -330,7 +335,7 @@ class PaymentProvider with ChangeNotifier {
               final Map<dynamic, dynamic> args = call.arguments;
               final double amount = (args['amount'] as num).toDouble();
               final String sender = args['sender'] as String? ?? 'Notification';
-              final String appName = args['appName'] as String? ?? 'App';
+              final String appName = args['appName'] as String? ?? 'UPI App';
               final String rawText = args['rawText'] as String? ?? '';
               final String packageName = args['packageName'] as String? ?? '';
               final String title = args['title'] as String? ?? '';
@@ -349,6 +354,8 @@ class PaymentProvider with ChangeNotifier {
               );
             } else if (call.method == 'onWakeWordDetected') {
               _handleWakeWordDetected();
+            } else if (call.method == 'replayLastPayment') {
+              replayLastPayment();
             }
           } catch (e) {
             debugPrint("[PaymentProvider] Error processing notification: $e");
@@ -394,7 +401,6 @@ class PaymentProvider with ChangeNotifier {
   Future<void> _verifyMethodChannel() async {
     try {
       final bool? listenerGranted = await _channel.invokeMethod<bool>('isListenerPermissionGranted');
-      // If we got any response, communication is working!
       _isMethodChannelWorking = listenerGranted != null;
       notifyListeners();
     } catch (e) {
@@ -412,7 +418,6 @@ class PaymentProvider with ChangeNotifier {
       await _flutterTts.setVolume(1.0);
       await _flutterTts.setPitch(1.0);
       
-      // Reduce speech delay by awaiting completion explicitly
       await _flutterTts.awaitSpeakCompletion(true);
 
       _flutterTts.setCompletionHandler(() {
@@ -563,8 +568,6 @@ class PaymentProvider with ChangeNotifier {
     notifyListeners();
   }
 
-
-
   Future<void> setSpeechRate(double rate) async {
     _speechRate = rate;
     try {
@@ -609,12 +612,9 @@ class PaymentProvider with ChangeNotifier {
     notifyListeners();
   }
 
-
-
   final Set<String> _seenFingerprints = {};
   String _currentDateStr = "";
 
-  // Requirement 3 & 4: Process and log raw notification captured
   Future<void> handleNewPayment({
     required double amount,
     required String sender,
@@ -625,14 +625,12 @@ class PaymentProvider with ChangeNotifier {
     required String body,
     required bool isSent,
   }) async {
-
     if (!_isListening) {
       debugPrint("[PaymentProvider] Listening is paused. Ignoring raw notification.");
       _restoreVolume();
       return;
     }
 
-    // Ignore notifications when title or body is empty
     if (title.isEmpty || body.isEmpty) {
       _restoreVolume();
       return;
@@ -641,16 +639,12 @@ class PaymentProvider with ChangeNotifier {
     final parsed = parsePayment(body);
     if (parsed == null) {
       _restoreVolume();
-      return; // say nothing
+      return;
     }
 
-    final speech = _getSpeechString(parsed.amount, parsed.type);
-    
-    if (isNightModeActive) {
-      debugPrint("[PaymentProvider] Night mode is active. Skipping TTS.");
-    } else {
-      flutterTts.speak(speech);
-    }
+    final actualAmount = parsed.amount > 0.0 ? parsed.amount : amount;
+    final resolvedSender = (sender == 'Notification' || sender.isEmpty) ? (title.isNotEmpty ? title : 'UPI User') : sender;
+    final finalAppName = appName == 'UPI App' ? 'UPI' : appName;
 
     final now = DateTime.now();
     final dateStr = now.toIso8601String().substring(0, 10);
@@ -660,7 +654,8 @@ class PaymentProvider with ChangeNotifier {
       _currentDateStr = dateStr;
     }
 
-    final fingerprint = "${parsed.amount}_${parsed.type}_$dateStr";
+    // High fidelity deduplication fingerprint (amount + party/sender + type + date)
+    final fingerprint = "${actualAmount}_${resolvedSender}_${isSent ? 'sent' : 'received'}_$dateStr";
     if (_seenFingerprints.contains(fingerprint)) {
       debugPrint("[PaymentProvider] Duplicate fingerprint for today: $fingerprint. Dropping.");
       _restoreVolume();
@@ -668,31 +663,40 @@ class PaymentProvider with ChangeNotifier {
     }
     _seenFingerprints.add(fingerprint);
 
-    // Live Notification Feed
+    final speech = _getSpeechString(actualAmount, isSent ? 'outgoing' : 'incoming', finalAppName, resolvedSender);
+    
+    if (isNightModeActive) {
+      debugPrint("[PaymentProvider] Night mode is active. Skipping TTS.");
+    } else if (_isVoiceAlertEnabled) {
+      _boostVolume();
+      _flutterTts.speak(speech);
+    }
+
+    // Live Notification Feed logger
     final rawNotif = RawNotification(
       packageName: packageName,
       title: "UPI Payment",
       body: speech,
       timestamp: now,
-      appName: appName,
+      appName: finalAppName,
     );
     _rawFeed.insert(0, rawNotif);
     if (_rawFeed.length > 50) {
       _rawFeed.removeLast();
     }
 
-    // 9. Store valid transactions in Hive only
+    // Store in Hive
     try {
       final newPayment = PaymentRecord(
-        amount: parsed.amount,
-        sender: appName,
-        appName: appName,
+        amount: actualAmount,
+        sender: resolvedSender,
+        appName: finalAppName,
         timestamp: now,
         rawText: speech,
         packageName: packageName,
         title: "UPI Payment",
         body: speech,
-        isSent: parsed.type == "outgoing",
+        isSent: isSent,
         accountNumber: parsed.accountNumber,
       );
 
@@ -706,19 +710,29 @@ class PaymentProvider with ChangeNotifier {
       final Box box = Hive.box('payments');
       await box.put('history', _paymentHistory.map((e) => e.toMap()).toList());
 
-      // Update and save balance based on transaction type
-      if (parsed.type == 'incoming') {
-        _balance += parsed.amount;
-      } else if (parsed.type == 'outgoing') {
-        _balance -= parsed.amount;
+      if (isSent) {
+        _balance -= actualAmount;
+      } else {
+        _balance += actualAmount;
       }
       await box.put('balance', _balance);
     } catch (e) {
-      debugPrint("[PaymentProvider] Failed to store record or update balance in Hive: $e");
+      debugPrint("[PaymentProvider] Failed to store record or update balance: $e");
     }
 
     _updateHomeWidget();
     notifyListeners();
+  }
+
+  Future<void> replayLastPayment() async {
+    if (_lastPayment != null) {
+      debugPrint("[PaymentProvider] Replaying last payment...");
+      _boostVolume();
+      await _flutterTts.speak(_lastPayment!.rawText);
+    } else {
+      debugPrint("[PaymentProvider] No payment to replay.");
+      await _flutterTts.speak("No recent payments detected");
+    }
   }
 
   Future<void> _updateHomeWidget() async {
@@ -738,62 +752,66 @@ class PaymentProvider with ChangeNotifier {
     }
   }
 
-  String _getSpeechString(double amount, String type) {
+  String _getSpeechString(double amount, String type, String appName, String sender) {
     final formattedAmount = amount % 1 == 0 ? amount.toInt() : amount;
     final isIncoming = type == 'incoming';
 
     switch (_language) {
       case 'hi-IN':
         return isIncoming
-            ? "$formattedAmount रुपये प्राप्त हुए"
-            : "$formattedAmount रुपये भेजे गए";
+            ? "$sender से $appName के माध्यम से $formattedAmount रुपये प्राप्त हुए"
+            : "$sender को $appName के माध्यम से $formattedAmount रुपये भेजे गए";
       case 'ta-IN':
         return isIncoming
-            ? "$formattedAmount ரூபாய் கிடைத்தது"
-            : "$formattedAmount ரூபாய் அனுப்பினோம்";
+            ? "$sender இடமிருந்து $appName வழியாக $formattedAmount ரூபாய் கிடைத்தது"
+            : "$sender க்கு $appName வழியாக $formattedAmount ரூபாய் அனுப்பினோம்";
       case 'te-IN':
         return isIncoming
-            ? "$formattedAmount రూపాయలు వచ్చాయి"
-            : "$formattedAmount రూపాయలు పంపబడ్డాయి";
+            ? "$sender నుండి $appName ద్వారా $formattedAmount రూపాయలు వచ్చాయి"
+            : "$sender కి $appName ద్వారా $formattedAmount రూపాయలు పంపబడ్డాయి";
       case 'kn-IN':
         return isIncoming
-            ? "$formattedAmount ರೂಪಾಯಿ ಬಂದಿದೆ"
-            : "$formattedAmount ರೂಪಾಯಿ ಕಳಿಸಲಾಗಿದೆ";
+            ? "$sender ರಿಂದ $appName ಮೂಲಕ $formattedAmount ರೂಪಾಯಿ ಬಂದಿದೆ"
+            : "$sender ಗೆ $appName ಮೂಲಕ $formattedAmount ರೂಪಾಯಿ ಕಳಿಸಲಾಗಿದೆ";
       case 'ml-IN':
         return isIncoming
-            ? "$formattedAmount രൂപ ലഭിച്ചു"
-            : "$formattedAmount രൂപ അയച്ചു";
+            ? "$sender-ൽ നിന്ന് $appName വഴി $formattedAmount രൂപ ലഭിച്ചു"
+            : "$sender-ലേക്ക് $appName വഴി $formattedAmount രൂപ അയച്ചു";
       case 'bn-IN':
         return isIncoming
-            ? "$formattedAmount টাকা পাওয়া গেছে"
-            : "$formattedAmount টাকা পাঠানো হয়েছে";
+            ? "$sender এর থেকে $appName এর মাধ্যমে $formattedAmount টাকা পাওয়া গেছে"
+            : "$sender কে $appName এর মাধ্যমে $formattedAmount টাকা পাঠানো হয়েছে";
       case 'en-IN':
       default:
         final word = amount == 1.0 ? "rupee" : "rupees";
         return isIncoming
-            ? "Received $formattedAmount $word"
-            : "Sent $formattedAmount $word";
+            ? "Received $formattedAmount $word via $appName from $sender"
+            : "Sent $formattedAmount $word via $appName to $sender";
     }
   }
 
   Future<void> testSpeak({bool isSent = false}) async {
-    final speech = _getSpeechString(100.0, isSent ? 'outgoing' : 'incoming');
-    flutterTts.speak(speech);
+    final speech = _getSpeechString(100.0, isSent ? 'outgoing' : 'incoming', 'GPay', 'Test User');
+    _boostVolume();
+    _flutterTts.speak(speech);
   }
 
   Future<void> speakPaymentAmount(double amount, bool isSent) async {
-    final speech = _getSpeechString(amount, isSent ? 'outgoing' : 'incoming');
+    final speech = _getSpeechString(amount, isSent ? 'outgoing' : 'incoming', 'UPI', 'User');
+    _boostVolume();
     await _flutterTts.speak(speech);
   }
 
   Future<void> testTTS(bool isSent) async {
-    final speech = _getSpeechString(100.0, 'incoming');
-    flutterTts.speak(speech);
+    final speech = _getSpeechString(100.0, 'incoming', 'GPay', 'Tester');
+    _boostVolume();
+    _flutterTts.speak(speech);
   }
 
   Future<void> testVoice() async {
-    final speech = _getSpeechString(100.0, 'incoming');
-    flutterTts.speak(speech);
+    final speech = _getSpeechString(100.0, 'incoming', 'GPay', 'Tester');
+    _boostVolume();
+    _flutterTts.speak(speech);
   }
 
   Future<void> updateBalance(double newBalance) async {
@@ -810,9 +828,10 @@ class PaymentProvider with ChangeNotifier {
   void _handleWakeWordDetected() {
     debugPrint("[PaymentProvider] Wake word detected!");
     if (_lastPayment != null) {
-      speakPaymentAmount(_lastPayment!.amount, _lastPayment!.isSent);
+      _boostVolume();
+      _flutterTts.speak(_lastPayment!.rawText);
     } else {
-      flutterTts.speak("No recent transactions found");
+      _flutterTts.speak("No recent transactions found");
     }
   }
 
@@ -848,13 +867,9 @@ class PaymentProvider with ChangeNotifier {
     if (_lastShakeSpeakTime != null && now.difference(_lastShakeSpeakTime!).inSeconds < 3) return;
     _lastShakeSpeakTime = now;
 
-    final isSent = _lastPayment!.isSent;
-    final speech = _getSpeechString(_lastPayment!.amount, isSent ? 'outgoing' : 'incoming');
-    
     _boostVolume();
-    _flutterTts.speak(speech);
+    _flutterTts.speak(_lastPayment!.rawText);
   }
-
 
   Future<String?> exportHistoryToCsv() async {
     try {
@@ -904,6 +919,4 @@ class PaymentProvider with ChangeNotifier {
     }
     notifyListeners();
   }
-
-
 }

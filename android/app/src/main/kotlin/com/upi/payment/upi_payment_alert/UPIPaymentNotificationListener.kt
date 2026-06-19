@@ -127,20 +127,20 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
             return
         }
 
-        // Extract amount if present in raw text (we can still parse it or send 0.0, we will keep parsing as a fallback, but Flutter will do the main parsing)
+        // Extract amount if present in raw text
         val amount = parseAnyAmount(text) ?: 0.0
 
         // Detect incoming (credited/received) vs outgoing (debited/sent/paid/transferred/deducted)
         val isIncoming = textLower.contains("credited") || textLower.contains("received")
         val isOutgoing = textLower.contains("debited") ||
-                         textLower.contains("sent") ||
-                         textLower.contains("paid") ||
-                         textLower.contains("transferred") ||
-                         textLower.contains("deducted") ||
-                         textLower.contains("linked to vpa") ||
-                         textLower.contains("paid to") ||
-                         textLower.contains("transferred to") ||
-                         textLower.contains("sent to")
+                          textLower.contains("sent") ||
+                          textLower.contains("paid") ||
+                          textLower.contains("transferred") ||
+                          textLower.contains("deducted") ||
+                          textLower.contains("linked to vpa") ||
+                          textLower.contains("paid to") ||
+                          textLower.contains("transferred to") ||
+                          textLower.contains("sent to")
         val isSent = if (isIncoming) false else if (isOutgoing) true else false
 
         val timestamp = sbn.postTime
@@ -189,16 +189,24 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
     }
 
     private fun getAppNameFriendly(packageName: String): String {
-        return try {
-            val pm = packageManager
-            val info = pm.getApplicationInfo(packageName, 0)
-            pm.getApplicationLabel(info).toString()
-        } catch (e: Exception) {
-            val parts = packageName.split(".")
-            if (parts.isNotEmpty()) {
-                parts.last().replaceFirstChar { it.uppercase() }
-            } else {
-                packageName
+        return when (packageName) {
+            "com.google.android.apps.nbu.paisa.user" -> "GPay"
+            "net.one97.paytm" -> "Paytm"
+            "com.phonepe.app" -> "PhonePe"
+            "in.org.npci.upiapp" -> "BHIM"
+            else -> {
+                try {
+                    val pm = packageManager
+                    val info = pm.getApplicationInfo(packageName, 0)
+                    pm.getApplicationLabel(info).toString()
+                } catch (e: Exception) {
+                    val parts = packageName.split(".")
+                    if (parts.isNotEmpty()) {
+                        parts.last().replaceFirstChar { it.uppercase() }
+                    } else {
+                        packageName
+                    }
+                }
             }
         }
     }

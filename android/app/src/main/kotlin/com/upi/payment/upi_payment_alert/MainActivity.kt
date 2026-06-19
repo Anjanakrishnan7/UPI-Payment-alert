@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.NonNull
@@ -20,6 +21,29 @@ class MainActivity : FlutterActivity(), android.speech.RecognitionListener {
     private var speechRecognizer: android.speech.SpeechRecognizer? = null
     private var speechIntent: Intent? = null
     private var isListeningForWakeWord = false
+    private var shouldReplayOnStart = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action == "REPLAY_LAST_PAYMENT") {
+            Log.d("MainActivity", "Received REPLAY_LAST_PAYMENT intent action")
+            val ch = channel
+            if (ch != null) {
+                ch.invokeMethod("replayLastPayment", null)
+            } else {
+                shouldReplayOnStart = true
+            }
+        }
+    }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -64,6 +88,11 @@ class MainActivity : FlutterActivity(), android.speech.RecognitionListener {
                     result.notImplemented()
                 }
             }
+        }
+
+        if (shouldReplayOnStart) {
+            shouldReplayOnStart = false
+            mChannel.invokeMethod("replayLastPayment", null)
         }
     }
 
