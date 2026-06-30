@@ -68,28 +68,53 @@ class PdfReportService {
 
     // Build daily records for chart (use 7 days chart format for Weekly, 30 days for Monthly)
     final List<Map<String, dynamic>> chartDays = [];
-    final int dayCount = period == 'Monthly' ? 30 : (period == 'Weekly' ? 7 : 1);
-    for (int i = dayCount - 1; i >= 0; i--) {
-      final date = now.subtract(Duration(days: i));
-      final label = period == 'Monthly' ? date.day.toString() : DateFormat('E').format(date);
-      
-      double dayRec = 0;
-      double daySent = 0;
-      
+    if (period == 'Weekly') {
+      const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      for (int i = 0; i < 7; i++) {
+        chartDays.add({
+          'label': weekdays[i],
+          'received': 0.0,
+          'sent': 0.0,
+        });
+      }
+
+      final today = DateTime(now.year, now.month, now.day);
+      final DateTime startLimit = today.subtract(const Duration(days: 6));
+
       for (final p in provider.paymentHistory) {
-        if (p.timestamp.year == date.year && p.timestamp.month == date.month && p.timestamp.day == date.day) {
-          if (p.isSent) {
-            daySent += p.amount;
-          } else {
-            dayRec += p.amount;
-          }
+        final date = p.timestamp;
+        final recordDateOnly = DateTime(date.year, date.month, date.day);
+        if (recordDateOnly.isAtSameMomentAs(startLimit) || 
+            (recordDateOnly.isAfter(startLimit) && recordDateOnly.isBefore(today.add(const Duration(days: 1))))) {
+          final int chartIndex = date.weekday == 7 ? 0 : date.weekday;
+          chartDays[chartIndex]['sent'] = chartDays[chartIndex]['sent'] + (p.isSent ? p.amount : 0.0);
+          chartDays[chartIndex]['received'] = chartDays[chartIndex]['received'] + (p.isSent ? 0.0 : p.amount);
         }
       }
-      chartDays.add({
-        'label': label,
-        'received': dayRec,
-        'sent': daySent,
-      });
+    } else {
+      final int dayCount = period == 'Monthly' ? 30 : 1;
+      for (int i = dayCount - 1; i >= 0; i--) {
+        final date = now.subtract(Duration(days: i));
+        final label = period == 'Monthly' ? date.day.toString() : DateFormat('E').format(date);
+        
+        double dayRec = 0;
+        double daySent = 0;
+        
+        for (final p in provider.paymentHistory) {
+          if (p.timestamp.year == date.year && p.timestamp.month == date.month && p.timestamp.day == date.day) {
+            if (p.isSent) {
+              daySent += p.amount;
+            } else {
+              dayRec += p.amount;
+            }
+          }
+        }
+        chartDays.add({
+          'label': label,
+          'received': dayRec,
+          'sent': daySent,
+        });
+      }
     }
 
     // Find max for scaling chart

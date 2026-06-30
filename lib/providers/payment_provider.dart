@@ -7,9 +7,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:home_widget/home_widget.dart';
 import '../models/payment_record.dart';
 import 'dart:io';
-import 'dart:math';
 import 'package:path_provider/path_provider.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 
 enum TtsStatus { initializing, initialized, speaking, failed }
 
@@ -119,6 +117,9 @@ class PaymentProvider with ChangeNotifier {
   bool _isVoiceAlertEnabled = true;
   double _speechRate = 0.3;
   String _language = "en-IN";
+  bool _hasAcceptedPrivacyNotice = false;
+  bool _isCheckingPermissions = false;
+  double _ttsVolume = 0.5;
   
   int _nightModeStartHour = 0;
   int _nightModeStartMinute = 0;
@@ -160,8 +161,7 @@ class PaymentProvider with ChangeNotifier {
   double _totalSentThisMonthCache = 0.0;
 
 
-  // Shake / Sensors state
-  DateTime? _lastShakeSpeakTime;
+
 
   // Live Notification Feed State
   final List<RawNotification> _rawFeed = [];
@@ -202,8 +202,10 @@ class PaymentProvider with ChangeNotifier {
   // Getters
   bool get isInitialized => _isInitialized;
   bool get isListening => _isListening;
+  bool get hasAcceptedPrivacyNotice => _hasAcceptedPrivacyNotice;
   bool get isVoiceAlertEnabled => _isVoiceAlertEnabled;
   double get speechRate => _speechRate;
+  double get ttsVolume => _ttsVolume;
   String get language => _language;
   int get nightModeStartHour => _nightModeStartHour;
   int get nightModeStartMinute => _nightModeStartMinute;
@@ -299,6 +301,13 @@ class PaymentProvider with ChangeNotifier {
       _voiceFilterAccount = _prefs.getString('voiceFilterAccount') ?? 'All Accounts';
       _isLightMode = _prefs.getBool('isLightMode') ?? true;
       _batteryOptimizationSkipped = _prefs.getBool('battery_optimization_skipped') ?? false;
+      _hasAcceptedPrivacyNotice = _prefs.getBool('hasAcceptedPrivacyNotice') ?? false;
+      if (_prefs.containsKey('ttsVolume')) {
+        _ttsVolume = _prefs.getDouble('ttsVolume')!;
+      } else {
+        final isExisting = _prefs.containsKey('isVoiceAlertEnabled') || _prefs.containsKey('speechRate');
+        _ttsVolume = isExisting ? 0.75 : 0.5;
+      }
     }
     Future.microtask(() => _safeInit(preloaded: prefs != null));
   }
@@ -323,6 +332,13 @@ class PaymentProvider with ChangeNotifier {
           _voiceFilterAccount = _prefs.getString('voiceFilterAccount') ?? 'All Accounts';
           _isLightMode = _prefs.getBool('isLightMode') ?? true;
           _batteryOptimizationSkipped = _prefs.getBool('battery_optimization_skipped') ?? false;
+          _hasAcceptedPrivacyNotice = _prefs.getBool('hasAcceptedPrivacyNotice') ?? false;
+          if (_prefs.containsKey('ttsVolume')) {
+            _ttsVolume = _prefs.getDouble('ttsVolume')!;
+          } else {
+            final isExisting = _prefs.containsKey('isVoiceAlertEnabled') || _prefs.containsKey('speechRate');
+            _ttsVolume = isExisting ? 0.75 : 0.5;
+          }
         }
 
         debugPrint("[PaymentProvider] Initializing Hive History...");
@@ -399,8 +415,7 @@ class PaymentProvider with ChangeNotifier {
       // 5. Test MethodChannel Verification
       _verifyMethodChannel();
 
-      // 6. Shake gesture initialization
-      _initShakeDetection();
+
       
       // 7. Update Home Screen Widget
       _updateHomeWidget();
@@ -428,7 +443,7 @@ class PaymentProvider with ChangeNotifier {
       debugPrint("[PaymentProvider] Starting background TTS initialization...");
       await _flutterTts.setLanguage(_language).timeout(const Duration(seconds: 2));
       await _flutterTts.setSpeechRate(_speechRate).timeout(const Duration(seconds: 2));
-      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setVolume(_ttsVolume).timeout(const Duration(seconds: 2));
       await _flutterTts.setPitch(1.0);
       
       await _flutterTts.awaitSpeakCompletion(true);
@@ -463,59 +478,77 @@ class PaymentProvider with ChangeNotifier {
   }
 
   Future<void> _checkPermissionsAsync() async {
-    try {
-      debugPrint("[PaymentProvider] Starting background notification permission query...");
-      final PermissionStatus status = await Permission.notification.status.timeout(const Duration(seconds: 2));
-      _isNotificationPermissionGranted = status.isGranted;
-    } catch (e) {
-      debugPrint("[PaymentProvider] Background notification permission check failed: $e");
+    if (_isCheckingPermissions) {
+      debugPrint("[PaymentProvider] _checkPermissionsAsync already in progress. Skipping.");
+      return;
     }
+    _isCheckingPermissions = true;
+    try {
+      try {
+        debugPrint("[PaymentProvider] Starting background notification permission query...");
+        final PermissionStatus status = await Permission.notification.status.timeout(const Duration(seconds: 2));
+        _isNotificationPermissionGranted = status.isGranted;
+      } catch (e) {
+        debugPrint("[PaymentProvider] Background notification permission check failed: $e");
+      }
 
-    try {
-      debugPrint("[PaymentProvider] Starting background listener permission MethodChannel query...");
-      final bool? listenerGranted = await _channel.invokeMethod<bool>('isListenerPermissionGranted').timeout(const Duration(seconds: 2));
-      _isListenerPermissionGranted = listenerGranted ?? false;
-    } catch (e) {
-      debugPrint("[PaymentProvider] Background listener permission check failed: $e");
-    }
+      try {
+        debugPrint("[PaymentProvider] Starting background listener permission MethodChannel query...");
+        final bool? listenerGranted = await _channel.invokeMethod<bool>('isListenerPermissionGranted').timeout(const Duration(seconds: 2));
+        _isListenerPermissionGranted = listenerGranted ?? false;
+      } catch (e) {
+        debugPrint("[PaymentProvider] Background listener permission check failed: $e");
+      }
 
-    try {
-      debugPrint("[PaymentProvider] Starting background battery optimization check...");
-      final bool? batteryDisabled = await _channel.invokeMethod<bool>('isBatteryOptimizationDisabled').timeout(const Duration(seconds: 2));
-      _isBatteryOptimizationDisabled = batteryDisabled ?? true;
-    } catch (e) {
-      debugPrint("[PaymentProvider] Background battery optimization check failed: $e");
+      try {
+        debugPrint("[PaymentProvider] Starting background battery optimization check...");
+        final bool? batteryDisabled = await _channel.invokeMethod<bool>('isBatteryOptimizationDisabled').timeout(const Duration(seconds: 2));
+        _isBatteryOptimizationDisabled = batteryDisabled ?? true;
+      } catch (e) {
+        debugPrint("[PaymentProvider] Background battery optimization check failed: $e");
+      }
+      
+      notifyListeners();
+    } finally {
+      _isCheckingPermissions = false;
     }
-    
-    notifyListeners();
   }
 
   Future<void> checkPermissions() async {
+    if (_isCheckingPermissions) {
+      debugPrint("[PaymentProvider] checkPermissions already in progress. Skipping.");
+      return;
+    }
+    _isCheckingPermissions = true;
     debugPrint("[PaymentProvider] Explicit checkPermissions requested.");
     try {
-      final PermissionStatus status = await Permission.notification.status;
-      _isNotificationPermissionGranted = status.isGranted;
-    } catch (e) {
-      debugPrint("[PaymentProvider] Notification permission check error: $e");
-    }
+      try {
+        final PermissionStatus status = await Permission.notification.status;
+        _isNotificationPermissionGranted = status.isGranted;
+      } catch (e) {
+        debugPrint("[PaymentProvider] Notification permission check error: $e");
+      }
 
-    try {
-      final bool? listenerGranted = await _channel.invokeMethod<bool>('isListenerPermissionGranted');
-      _isListenerPermissionGranted = listenerGranted ?? false;
-      _isMethodChannelWorking = listenerGranted != null;
-    } on PlatformException catch (e) {
-      debugPrint('Failed to check listener permission: ${e.message}');
-      _isListenerPermissionGranted = false;
-    }
+      try {
+        final bool? listenerGranted = await _channel.invokeMethod<bool>('isListenerPermissionGranted');
+        _isListenerPermissionGranted = listenerGranted ?? false;
+        _isMethodChannelWorking = listenerGranted != null;
+      } on PlatformException catch (e) {
+        debugPrint('Failed to check listener permission: ${e.message}');
+        _isListenerPermissionGranted = false;
+      }
 
-    try {
-      final bool? batteryDisabled = await _channel.invokeMethod<bool>('isBatteryOptimizationDisabled');
-      _isBatteryOptimizationDisabled = batteryDisabled ?? true;
-    } catch (e) {
-      debugPrint('Failed to check battery optimization status: $e');
-    }
+      try {
+        final bool? batteryDisabled = await _channel.invokeMethod<bool>('isBatteryOptimizationDisabled');
+        _isBatteryOptimizationDisabled = batteryDisabled ?? true;
+      } catch (e) {
+        debugPrint('Failed to check battery optimization status: $e');
+      }
 
-    notifyListeners();
+      notifyListeners();
+    } finally {
+      _isCheckingPermissions = false;
+    }
   }
 
   Future<void> requestNotificationPermission() async {
@@ -575,6 +608,16 @@ class PaymentProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> acceptPrivacyNotice() async {
+    _hasAcceptedPrivacyNotice = true;
+    try {
+      await _prefs.setBool('hasAcceptedPrivacyNotice', true);
+    } catch (e) {
+      debugPrint("[PaymentProvider] Saving privacy notice state failed: $e");
+    }
+    notifyListeners();
+  }
+
   Future<void> setSpeechRate(double rate) async {
     _speechRate = rate;
     try {
@@ -582,6 +625,17 @@ class PaymentProvider with ChangeNotifier {
       await _flutterTts.setSpeechRate(rate);
     } catch (e) {
       debugPrint("[PaymentProvider] Applying speech rate failed: $e");
+    }
+    notifyListeners();
+  }
+
+  Future<void> setTtsVolume(double volume) async {
+    _ttsVolume = volume;
+    try {
+      await _prefs.setDouble('ttsVolume', volume);
+      await _flutterTts.setVolume(volume);
+    } catch (e) {
+      debugPrint("[PaymentProvider] Applying TTS volume failed: $e");
     }
     notifyListeners();
   }
@@ -905,41 +959,14 @@ class PaymentProvider with ChangeNotifier {
   }
 
   Future<void> _boostVolume() async {
-    try {
-      await _channel.invokeMethod('boostVolume');
-    } catch (e) {
-      debugPrint("[PaymentProvider] Failed to boost volume: $e");
-    }
+    // No-op: Do NOT modify phone's system volume or boost media volume.
   }
 
   Future<void> _restoreVolume() async {
-    try {
-      await _channel.invokeMethod('restoreVolume');
-    } catch (e) {
-      debugPrint("[PaymentProvider] Failed to restore volume: $e");
-    }
+    // No-op: Do NOT modify phone's system volume or boost media volume.
   }
 
-  void _initShakeDetection() {
-    userAccelerometerEventStream().listen((UserAccelerometerEvent event) {
-      final double acceleration = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
-      if (acceleration > 15.0) {
-        _handleShake();
-      }
-    });
-  }
 
-  void _handleShake() {
-    if (_lastPayment == null) return;
-    final now = DateTime.now();
-    if (now.difference(_lastPayment!.timestamp).inMinutes >= 5) return;
-    if (_lastShakeSpeakTime != null && now.difference(_lastShakeSpeakTime!).inSeconds < 3) return;
-    _lastShakeSpeakTime = now;
-
-    debugPrint("[PaymentProvider] TTS triggered: source=shake_to_replay, text='${_lastPayment!.rawText}'");
-    _boostVolume();
-    _flutterTts.speak(_lastPayment!.rawText);
-  }
 
   Future<String?> exportHistoryToCsv() async {
     try {

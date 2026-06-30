@@ -4,6 +4,7 @@ import 'setup_screen.dart';
 import '../widgets/app_logo.dart';
 import 'package:provider/provider.dart';
 import '../providers/payment_provider.dart';
+import 'privacy_notice_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -70,8 +71,14 @@ class _SplashScreenState extends State<SplashScreen>
     Future.delayed(const Duration(seconds: 3), () {
       if (!mounted) return;
       final provider = context.read<PaymentProvider>();
-      final showSetup = !provider.isListenerPermissionGranted || (!provider.isBatteryOptimizationDisabled && !provider.batteryOptimizationSkipped);
-      final Widget targetScreen = showSetup ? const SetupScreen() : const HomeScreen();
+      final Widget targetScreen;
+      
+      if (!provider.hasAcceptedPrivacyNotice) {
+        targetScreen = const PrivacyNoticeScreen();
+      } else {
+        final showSetup = !provider.isListenerPermissionGranted || (!provider.isBatteryOptimizationDisabled && !provider.batteryOptimizationSkipped);
+        targetScreen = showSetup ? const SetupScreen() : const HomeScreen();
+      }
       
       debugPrint("[SplashScreen] 3 seconds timer fired. Navigating to ${targetScreen.runtimeType}...");
       try {

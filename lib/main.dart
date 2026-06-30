@@ -5,6 +5,7 @@ import 'providers/payment_provider.dart';
 import 'screens/splash_screen.dart';
 
 import 'package:hive_flutter/hive_flutter.dart';
+import 'services/encryption_service.dart';
 
 void main() async {
   debugPrint("[Main] main() function called. Starting application startup tracing...");
@@ -13,8 +14,8 @@ void main() async {
     WidgetsFlutterBinding.ensureInitialized();
     debugPrint("[Main] WidgetsFlutterBinding.ensureInitialized() succeeded.");
     await Hive.initFlutter();
-    await Hive.openBox('payments');
-    debugPrint("[Main] Hive initialized and payments box opened.");
+    await EncryptionService.openEncryptedBox();
+    debugPrint("[Main] Hive initialized and encrypted payments box opened.");
     prefs = await SharedPreferences.getInstance();
     debugPrint("[Main] SharedPreferences preloaded successfully.");
   } catch (e) {

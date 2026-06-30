@@ -80,25 +80,56 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
         super.onNotificationPosted(sbn)
         if (sbn == null) return
 
+        val packageName = sbn.packageName ?: ""
+        val lowerPackage = packageName.lowercase()
+
+        // 1. Immediate ignore filters (Gmail, System UI, Social apps, screenshots, charging, promos)
+        val isGmail = lowerPackage == "com.google.android.gm"
+        val isSystemUi = lowerPackage == "com.android.systemui" || lowerPackage.contains("systemui")
+        val isSocial = lowerPackage.contains("whatsapp") || 
+                       lowerPackage.contains("facebook") || 
+                       lowerPackage.contains("instagram") || 
+                       lowerPackage.contains("twitter") || 
+                       lowerPackage.contains("snapchat") || 
+                       lowerPackage.contains("telegram") || 
+                       lowerPackage.contains("discord") ||
+                       lowerPackage.contains("messenger")
+
         val extras = sbn.notification.extras
-        val titleTemp = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val textTemp = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
-            ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
-        Log.d(TAG, "onNotificationPosted: key=${sbn.key}, packageName=${sbn.packageName}, postTime=${sbn.postTime}, title=$titleTemp, text=$textTemp")
+        val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        val text = (extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)
+            ?: extras?.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
 
-        val packageName = sbn.packageName
-        val isPaymentApp = ALLOWED_PAYMENT_PACKAGES.contains(packageName)
-        val isSmsApp = SMS_PACKAGES.contains(packageName)
+        val titleLower = title.lowercase()
+        val textLower = text.lowercase()
 
-        // Layer 1 - Source filter
-        val passedLayer1 = isPaymentApp || isSmsApp
-        if (!passedLayer1) {
+        val isScreenshot = titleLower.contains("screenshot") || textLower.contains("screenshot")
+        val isCharging = titleLower.contains("charging") || textLower.contains("charging") || textLower.contains("battery")
+        val isPromo = titleLower.contains("promo") || textLower.contains("promo") || 
+                      titleLower.contains("discount") || textLower.contains("discount") || 
+                      titleLower.contains("cashback") || textLower.contains("cashback") ||
+                      titleLower.contains("offer") || textLower.contains("offer")
+
+        if (isGmail || isSystemUi || isSocial || isScreenshot || isCharging || isPromo) {
+            Log.d(TAG, "Blocked package: $packageName")
             return
         }
 
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
-            ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
+        // 2. Allow only payment, banking, and SMS apps
+        val isPaymentApp = ALLOWED_PAYMENT_PACKAGES.contains(packageName) || 
+                           lowerPackage.contains("upi") || 
+                           lowerPackage.contains("payment") || 
+                           lowerPackage.contains("paisa") || 
+                           lowerPackage.contains("wallet")
+        val isBankingApp = lowerPackage.contains("bank")
+        val isSmsApp = SMS_PACKAGES.contains(packageName)
+
+        if (!isPaymentApp && !isBankingApp && !isSmsApp) {
+            Log.d(TAG, "Blocked package: $packageName")
+            return
+        }
+
+        Log.d(TAG, "onNotificationPosted: key=${sbn.key}, packageName=$packageName, postTime=${sbn.postTime}, title=$title, text=$text")
 
         if (title.isEmpty() || text.isEmpty()) {
             return
@@ -110,7 +141,6 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
         }
 
         // Layer 2 - Keyword filter
-        val textLower = text.lowercase()
         val hasKeyword1 = textLower.contains("credited") ||
                           textLower.contains("debited") ||
                           textLower.contains("sent") ||

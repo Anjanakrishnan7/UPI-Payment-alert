@@ -6,6 +6,9 @@ import '../services/pdf_report_service.dart';
 import '../providers/payment_provider.dart';
 import '../models/payment_record.dart';
 import '../widgets/app_logo.dart';
+import 'privacy_policy_screen.dart';
+import 'about_screen.dart';
+import 'security_info_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -250,7 +253,7 @@ class _HomeScreenState extends State<HomeScreen>
                         ? Icons.bar_chart_rounded
                         : _currentSection == 'settings'
                             ? Icons.settings_rounded
-                            : Icons.bug_report_rounded)
+                            : Icons.settings)
                     : (_currentIndex == 0 ? Icons.call_received_rounded : Icons.call_made_rounded),
                 color: indicatorColor,
                 size: 22,
@@ -440,7 +443,7 @@ class _HomeScreenState extends State<HomeScreen>
                     },
                   ),
                   _buildDrawerItem(
-                    icon: Icons.settings_rounded,
+                    icon: Icons.record_voice_over_rounded,
                     label: 'Voice Customization',
                     selected: _currentSection == 'settings',
                     onTap: () {
@@ -451,7 +454,7 @@ class _HomeScreenState extends State<HomeScreen>
                     },
                   ),
                   _buildDrawerItem(
-                    icon: Icons.bug_report_rounded,
+                    icon: Icons.settings_rounded,
                     label: 'Settings',
                     selected: _currentSection == 'diagnostics',
                     onTap: () {
@@ -673,11 +676,10 @@ class _HomeScreenState extends State<HomeScreen>
                       getTitlesWidget: (double value, TitleMeta meta) {
                         final valInt = value.toInt();
                         if (valInt >= 0 && valInt < 7) {
-                          final date = DateTime.now().subtract(Duration(days: 6 - valInt));
-                          const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                           return Padding(
                             padding: const EdgeInsets.only(top: 6.0),
-                            child: Text(days[date.weekday - 1], style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 10)),
+                            child: Text(days[valInt], style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 10)),
                           );
                         }
                         return const SizedBox();
@@ -691,10 +693,9 @@ class _HomeScreenState extends State<HomeScreen>
                 gridData: const FlGridData(show: false),
                 borderData: FlBorderData(show: false),
                 barGroups: List.generate(7, (index) {
-                  final key = weeklyMap.keys.elementAt(index);
-                  final double recVal = weeklyMap[key]?['received'] ?? 0.0;
-                  final double sentVal = weeklyMap[key]?['sent'] ?? 0.0;
-
+                  final double recVal = weeklyMap[index]?['received'] ?? 0.0;
+                  final double sentVal = weeklyMap[index]?['sent'] ?? 0.0;
+ 
                   return BarChartGroupData(
                     x: index,
                     barRods: [
@@ -886,22 +887,28 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Map<String, Map<String, double>> _getWeeklyTotals(List<PaymentRecord> history) {
-    final Map<String, Map<String, double>> data = {};
-    final now = DateTime.now();
-    for (int i = 6; i >= 0; i--) {
-      final date = now.subtract(Duration(days: i));
-      final dateStr = "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
-      data[dateStr] = {'received': 0.0, 'sent': 0.0};
+  Map<int, Map<String, double>> _getWeeklyTotals(List<PaymentRecord> history) {
+    final Map<int, Map<String, double>> data = {};
+    for (int i = 0; i < 7; i++) {
+      data[i] = {'received': 0.0, 'sent': 0.0};
     }
 
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // Start of the 7-day window (6 days ago)
+    final DateTime startLimit = today.subtract(const Duration(days: 6));
+
     for (final record in history) {
-      final dateStr = record.timestamp.toIso8601String().substring(0, 10);
-      if (data.containsKey(dateStr)) {
+      final date = record.timestamp;
+      final recordDateOnly = DateTime(date.year, date.month, date.day);
+      if (recordDateOnly.isAtSameMomentAs(startLimit) || 
+          (recordDateOnly.isAfter(startLimit) && recordDateOnly.isBefore(today.add(const Duration(days: 1))))) {
+        // Map to weekday index: Sunday -> 0, Monday -> 1, ..., Saturday -> 6
+        final int chartIndex = date.weekday == 7 ? 0 : date.weekday;
         if (record.isSent) {
-          data[dateStr]!['sent'] = data[dateStr]!['sent']! + record.amount;
+          data[chartIndex]!['sent'] = data[chartIndex]!['sent']! + record.amount;
         } else {
-          data[dateStr]!['received'] = data[dateStr]!['received']! + record.amount;
+          data[chartIndex]!['received'] = data[chartIndex]!['received']! + record.amount;
         }
       }
     }
@@ -921,24 +928,27 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // 4. Diagnostics Section
+  // 4. Diagnostics/Settings Section
   Widget _buildDiagnosticsSection(PaymentProvider provider) {
     final isChannelOk = provider.isMethodChannelWorking;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = _getTealAccent(context);
+    final cardColor = _getCardColor(context);
+    final borderColor = _getBorderColor(context);
 
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
+        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Diagnostics Overview
+            // Section: System Integrity (Notification Access & Battery Optimization)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(22),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: _getCardColor(context),
+                color: cardColor,
                 borderRadius: BorderRadius.circular(24),
                 border: Border.all(color: isDark ? const Color(0x1FFFB300) : Colors.amber.withAlpha(80)),
                 boxShadow: [
@@ -962,7 +972,7 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
                   const SizedBox(height: 18),
-                   _buildDiagnosticRow(
+                  _buildDiagnosticRow(
                     label: 'Notification Listener Active',
                     status: provider.isListenerPermissionGranted ? 'ACTIVE' : 'INACTIVE',
                     isOk: provider.isListenerPermissionGranted,
@@ -983,7 +993,7 @@ class _HomeScreenState extends State<HomeScreen>
                         : ElevatedButton(
                             onPressed: () => provider.requestListenerPermission(),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: _getTealAccent(context),
+                              backgroundColor: accent,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                               minimumSize: Size.zero,
@@ -1022,7 +1032,7 @@ class _HomeScreenState extends State<HomeScreen>
                         : ElevatedButton(
                             onPressed: () => provider.requestIgnoreBatteryOptimization(),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: _getTealAccent(context),
+                              backgroundColor: accent,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                               minimumSize: Size.zero,
@@ -1032,6 +1042,213 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                             child: const Text('Allow', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                           ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Section: Privacy & Security
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: borderColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withAlpha(isDark ? 30 : 10),
+                    blurRadius: 15,
+                    offset: const Offset(0, 8),
+                  )
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'PRIVACY & SECURITY',
+                    style: TextStyle(
+                      color: _getSecondaryTextColor(context),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // Privacy Policy Tile
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: accent.withAlpha(12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.shield_outlined, color: accent, size: 20),
+                    ),
+                    title: Text(
+                      'Privacy Policy',
+                      style: TextStyle(color: _getPrimaryTextColor(context), fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      'Review how we protect your security and data privacy.',
+                      style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 11),
+                    ),
+                    trailing: Icon(Icons.chevron_right_rounded, color: _getSecondaryTextColor(context)),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (context) => const PrivacyPolicyScreen()),
+                      );
+                    },
+                  ),
+                  Divider(color: _getDividerColor(context)),
+                  
+                  // Security Info Tile
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: accent.withAlpha(12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.gpp_good_outlined, color: accent, size: 20),
+                    ),
+                    title: Text(
+                      'Security Information',
+                      style: TextStyle(color: _getPrimaryTextColor(context), fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      'Verify local storage, ad-free policy, and data isolation.',
+                      style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 11),
+                    ),
+                    trailing: Icon(Icons.chevron_right_rounded, color: _getSecondaryTextColor(context)),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (context) => const SecurityInfoScreen()),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Section: About
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: borderColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withAlpha(isDark ? 30 : 10),
+                    blurRadius: 15,
+                    offset: const Offset(0, 8),
+                  )
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'ABOUT',
+                    style: TextStyle(
+                      color: _getSecondaryTextColor(context),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // About Tile
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: accent.withAlpha(12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.info_outline_rounded, color: accent, size: 20),
+                    ),
+                    title: Text(
+                      'About App',
+                      style: TextStyle(color: _getPrimaryTextColor(context), fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      'View version, developer details, and app information.',
+                      style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 11),
+                    ),
+                    trailing: Icon(Icons.chevron_right_rounded, color: _getSecondaryTextColor(context)),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (context) => const AboutScreen()),
+                      );
+                    },
+                  ),
+                  Divider(color: _getDividerColor(context)),
+
+                  // Clear History Tile
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF5252).withAlpha(12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.delete_forever_outlined, color: Color(0xFFFF5252), size: 20),
+                    ),
+                    title: const Text(
+                      'Clear Transaction History',
+                      style: TextStyle(color: Color(0xFFFF5252), fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      'Permanently delete all transaction records and logs.',
+                      style: TextStyle(color: _getSecondaryTextColor(context), fontSize: 11),
+                    ),
+                    onTap: () {
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          backgroundColor: cardColor,
+                          title: Text(
+                            'Clear History?',
+                            style: TextStyle(color: _getPrimaryTextColor(context), fontWeight: FontWeight.bold),
+                          ),
+                          content: Text(
+                            'This will permanently delete all your payment history records and notification feeds. This action cannot be undone.',
+                            style: TextStyle(color: _getBodyTextColor(context), fontSize: 14, height: 1.4),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: Text('Cancel', style: TextStyle(color: _getSecondaryTextColor(context))),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                provider.clearHistory();
+                                Navigator.pop(context);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Transaction history and log feeds cleared.'),
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              },
+                              child: const Text('Clear All', style: TextStyle(color: Color(0xFFFF5252), fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -1066,9 +1283,9 @@ class _HomeScreenState extends State<HomeScreen>
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
                 decoration: BoxDecoration(
-                  color: _getCardColor(context),
+                  color: cardColor,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: _getBorderColor(context)),
+                  border: Border.all(color: borderColor),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withAlpha(isDark ? 30 : 10),
@@ -1106,9 +1323,9 @@ class _HomeScreenState extends State<HomeScreen>
                   return Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: _getCardColor(context),
+                      color: cardColor,
                       borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: _getBorderColor(context)),
+                      border: Border.all(color: borderColor),
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withAlpha(isDark ? 20 : 8),
@@ -1160,6 +1377,20 @@ class _HomeScreenState extends State<HomeScreen>
                   );
                 },
               ),
+            const SizedBox(height: 20),
+            
+            // Bottom Version Text
+            Center(
+              child: Text(
+                'UPI Payment Alert v1.0.0',
+                style: TextStyle(
+                  color: _getSecondaryTextColor(context),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
             const SizedBox(height: 30),
           ],
         ),
@@ -1891,6 +2122,25 @@ class _HomeScreenState extends State<HomeScreen>
             activeColor: _getTealAccent(context),
             inactiveColor: isDark ? Colors.white12 : Colors.black12,
             onChanged: (rate) => provider.setSpeechRate(rate),
+          ),
+          const SizedBox(height: 14),
+
+          // Voice Volume Slider
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Voice Volume', style: TextStyle(color: _getPrimaryTextColor(context), fontWeight: FontWeight.bold, fontSize: 13)),
+              Text('${(provider.ttsVolume * 100).toInt()}%', style: TextStyle(color: _getTealAccent(context), fontSize: 12, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          Slider(
+            value: provider.ttsVolume,
+            min: 0.1,
+            max: 1.0,
+            divisions: 9,
+            activeColor: _getTealAccent(context),
+            inactiveColor: isDark ? Colors.white12 : Colors.black12,
+            onChanged: (volume) => provider.setTtsVolume(volume),
           ),
           const SizedBox(height: 14),
           Divider(color: _getDividerColor(context), height: 1),
