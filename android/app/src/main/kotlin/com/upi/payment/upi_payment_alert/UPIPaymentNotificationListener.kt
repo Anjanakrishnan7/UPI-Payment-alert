@@ -81,6 +81,10 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
         if (sbn == null) return
 
         val extras = sbn.notification.extras
+        val titleTemp = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        val textTemp = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
+        Log.d(TAG, "onNotificationPosted: key=${sbn.key}, packageName=${sbn.packageName}, postTime=${sbn.postTime}, title=$titleTemp, text=$textTemp")
 
         val packageName = sbn.packageName
         val isPaymentApp = ALLOWED_PAYMENT_PACKAGES.contains(packageName)
@@ -158,6 +162,7 @@ class UPIPaymentNotificationListener : NotificationListenerService() {
         paymentData["appName"] = friendlyAppName
         paymentData["rawText"] = text
         paymentData["isSent"] = isSent
+        paymentData["notificationKey"] = sbn.key
 
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             boostVolume(this)

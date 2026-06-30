@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'home_screen.dart';
+import 'setup_screen.dart';
+import '../widgets/app_logo.dart';
+import 'package:provider/provider.dart';
+import '../providers/payment_provider.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -65,11 +69,15 @@ class _SplashScreenState extends State<SplashScreen>
     debugPrint("[SplashScreen] Scheduling delayed navigation...");
     Future.delayed(const Duration(seconds: 3), () {
       if (!mounted) return;
-      debugPrint("[SplashScreen] 3 seconds timer fired. Navigating to HomeScreen...");
+      final provider = context.read<PaymentProvider>();
+      final showSetup = !provider.isListenerPermissionGranted || (!provider.isBatteryOptimizationDisabled && !provider.batteryOptimizationSkipped);
+      final Widget targetScreen = showSetup ? const SetupScreen() : const HomeScreen();
+      
+      debugPrint("[SplashScreen] 3 seconds timer fired. Navigating to ${targetScreen.runtimeType}...");
       try {
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
-            pageBuilder: (c, a, s) => const HomeScreen(),
+            pageBuilder: (c, a, s) => targetScreen,
             transitionsBuilder: (c, a, s, child) => FadeTransition(opacity: a, child: child),
             transitionDuration: const Duration(milliseconds: 600),
           ),
@@ -79,7 +87,7 @@ class _SplashScreenState extends State<SplashScreen>
         debugPrint("[SplashScreen] PageRouteBuilder navigation failed: $e. Falling back to MaterialPageRoute...");
         try {
           Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
+            MaterialPageRoute(builder: (context) => targetScreen),
           );
           debugPrint("[SplashScreen] Fallback MaterialPageRoute executed successfully.");
         } catch (navErr) {
@@ -111,15 +119,23 @@ class _SplashScreenState extends State<SplashScreen>
     final scaleAnim = _scaleAnimation ?? const AlwaysStoppedAnimation(1.0);
     final glowValueAnim = _glowAnimation ?? const AlwaysStoppedAnimation(20.0);
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final scaffoldBg = isDark ? const Color(0xFF090D1A) : const Color(0xFFF7F8FA);
+    final radialColors = isDark
+        ? [const Color(0xFF0F1528), const Color(0xFF090D1A), const Color(0xFF03050B)]
+        : [const Color(0xFFFFFFFF), const Color(0xFFF7F8FA), const Color(0xFFECEFF1)];
+    final titleColor = isDark ? Colors.white : const Color(0xFF1F2937);
+    final subtitleColor = isDark ? Colors.white70 : const Color(0xFF6B7280);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF090D1A),
+      backgroundColor: scaffoldBg,
       body: Container(
         width: double.infinity,
         height: double.infinity,
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: RadialGradient(
-            colors: [Color(0xFF0F1528), Color(0xFF090D1A), Color(0xFF03050B)],
-            stops: [0.0, 0.5, 1.0],
+            colors: radialColors,
+            stops: const [0.0, 0.5, 1.0],
             center: Alignment.center,
             radius: 1.2,
           ),
@@ -143,59 +159,22 @@ class _SplashScreenState extends State<SplashScreen>
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               // Glowing Center App Logo
-                              Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  Container(
-                                    width: 140,
-                                    height: 140,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: const Color(0xFF00FFC2).withAlpha(40),
-                                          blurRadius: glowValueAnim.value + 15,
-                                          spreadRadius: glowValueAnim.value / 2,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Container(
-                                    width: 110,
-                                    height: 110,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF101424),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: const Color(0xFF00FFC2).withAlpha(100),
-                                        width: 2,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: const Color(0xFF00FFC2).withAlpha(60),
-                                          blurRadius: glowValueAnim.value,
-                                        ),
-                                      ],
-                                    ),
-                                    child: const Icon(
-                                      Icons.offline_bolt_rounded,
-                                      color: Color(0xFF00FFC2),
-                                      size: 56,
-                                    ),
-                                  ),
-                                ],
+                              AppLogo(
+                                size: 110,
+                                showGlow: true,
+                                glowValue: glowValueAnim.value,
                               ),
                               const SizedBox(height: 48),
                               
                               // App Title
-                              const Text(
+                              Text(
                                 'UPI Payment Alert',
                                 style: TextStyle(
-                                  color: Colors.white,
+                                  color: titleColor,
                                   fontSize: 28,
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: 0.8,
-                                  shadows: [
+                                  shadows: const [
                                     Shadow(
                                       color: Color(0x3300FFC2),
                                       blurRadius: 15,
@@ -207,10 +186,10 @@ class _SplashScreenState extends State<SplashScreen>
                               const SizedBox(height: 10),
                               
                               // Subtitle
-                              const Text(
+                              Text(
                                 'Smart Voice Payment Assistant',
                                 style: TextStyle(
-                                  color: Colors.white70,
+                                  color: subtitleColor,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
                                   letterSpacing: 0.5,

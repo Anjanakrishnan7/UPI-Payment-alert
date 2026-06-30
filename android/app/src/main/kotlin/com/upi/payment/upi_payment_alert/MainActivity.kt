@@ -57,8 +57,22 @@ class MainActivity : FlutterActivity(), android.speech.RecognitionListener {
                     result.success(isNotificationServiceEnabled())
                 }
                 "openListenerSettings" -> {
-                    val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                    startActivity(intent)
+                    try {
+                        val intent = Intent("android.settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS")
+                        val cn = android.content.ComponentName(this, UPIPaymentNotificationListener::class.java)
+                        intent.putExtra(":settings:fragment_args_key", cn.flattenToString())
+                        val bundle = Bundle()
+                        bundle.putString(":settings:fragment_args_key", cn.flattenToString())
+                        intent.putExtra(":settings:show_fragment_args", bundle)
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                            startActivity(intent)
+                        } catch (ex: Exception) {
+                            Log.e("MainActivity", "Failed to open notification settings fallback", ex)
+                        }
+                    }
                     result.success(null)
                 }
                 "isBatteryOptimizationDisabled" -> {
@@ -66,6 +80,17 @@ class MainActivity : FlutterActivity(), android.speech.RecognitionListener {
                 }
                 "requestIgnoreBatteryOptimization" -> {
                     requestIgnoreBatteryOptimization()
+                    result.success(null)
+                }
+                "openBatteryOptimizationSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to open ignore battery optimization settings", e)
+                        }
+                    }
                     result.success(null)
                 }
                 "boostVolume" -> {

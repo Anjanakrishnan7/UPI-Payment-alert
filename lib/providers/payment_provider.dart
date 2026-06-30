@@ -13,6 +13,8 @@ import 'package:sensors_plus/sensors_plus.dart';
 
 enum TtsStatus { initializing, initialized, speaking, failed }
 
+const ttsAnnouncementDelay = Duration(milliseconds: 1000);
+
 class RawNotification {
   final String packageName;
   final String title;
@@ -33,18 +35,20 @@ class ParsedPayment {
   final String type; // "incoming" or "outgoing"
   final double amount;
   final String? accountNumber;
+  final String? upiRef;
 
-  ParsedPayment({required this.type, required this.amount, this.accountNumber});
+  ParsedPayment({required this.type, required this.amount, this.accountNumber, this.upiRef});
 
   dynamic operator [](String key) {
     if (key == 'type') return type;
     if (key == 'amount') return amount;
     if (key == 'accountNumber') return accountNumber;
+    if (key == 'upiRef') return upiRef;
     return null;
   }
 
   @override
-  String toString() => "ParsedPayment(type: $type, amount: $amount, account: $accountNumber)";
+  String toString() => "ParsedPayment(type: $type, amount: $amount, account: $accountNumber, upiRef: $upiRef)";
 }
 
 ParsedPayment? parsePayment(String message) {
@@ -72,12 +76,10 @@ ParsedPayment? parsePayment(String message) {
     caseSensitive: false,
   ).firstMatch(message);
 
-  if (match == null) {
-    match = RegExp(
-      r'^\s*([0-9,]+(?:\.[0-9]+)?)\s+was\s+(?:credited|debited)',
-      caseSensitive: false,
-    ).firstMatch(message);
-  }
+  match ??= RegExp(
+    r'^\s*([0-9,]+(?:\.[0-9]+)?)\s+was\s+(?:credited|debited)',
+    caseSensitive: false,
+  ).firstMatch(message);
 
   if (match == null) return null;
 
@@ -93,7 +95,16 @@ ParsedPayment? parsePayment(String message) {
     accountNumber = accMatch.group(1) ?? accMatch.group(2);
   }
 
-  return ParsedPayment(type: type, amount: amount, accountNumber: accountNumber);
+  String? upiRef;
+  final refMatch = RegExp(
+    r'(?:upi\s*ref|ref\s*no|reference\s*no|ref|txn\s*id|transaction\s*id)[^\d]*(\d{8,18})',
+    caseSensitive: false,
+  ).firstMatch(message);
+  if (refMatch != null) {
+    upiRef = refMatch.group(1);
+  }
+
+  return ParsedPayment(type: type, amount: amount, accountNumber: accountNumber, upiRef: upiRef);
 }
 
 class PaymentProvider with ChangeNotifier {
@@ -106,21 +117,48 @@ class PaymentProvider with ChangeNotifier {
   bool _isInitialized = false;
   bool _isListening = false;
   bool _isVoiceAlertEnabled = true;
-  double _speechRate = 0.5;
+  double _speechRate = 0.3;
   String _language = "en-IN";
   
-  // Fix 1: Default Night Mode hours to 00:00 - 00:00 (disabled)
   int _nightModeStartHour = 0;
+  int _nightModeStartMinute = 0;
   int _nightModeEndHour = 0;
+  int _nightModeEndMinute = 0;
   
   bool _isNotificationPermissionGranted = false;
   bool _isListenerPermissionGranted = false;
-  bool _isWakeWordEnabled = false;
   bool _isBatteryOptimizationDisabled = true;
+  bool _batteryOptimizationSkipped = false;
   PaymentRecord? _lastPayment;
   List<PaymentRecord> _paymentHistory = [];
   double _balance = 0.0;
   String? _selectedAccount;
+  String _voiceFilterAccount = 'All Accounts';
+  final Map<String, DateTime> _seenFingerprints = {};
+  final Map<String, String> _seenNotificationKeys = {};
+  final Set<String> _seenUpiRefs = {};
+  bool _isLightMode = true;
+
+  // Caching layer for performance optimization
+  List<PaymentRecord> _filteredHistoryCache = [];
+  List<PaymentRecord> _receivedHistoryCache = [];
+  List<PaymentRecord> _sentHistoryCache = [];
+  PaymentRecord? _lastReceivedPaymentCache;
+  PaymentRecord? _lastSentPaymentCache;
+
+  double _totalReceivedTodayCache = 0.0;
+  int _totalReceivedTransactionsTodayCache = 0;
+  double _highestReceivedPaymentCache = 0.0;
+
+  double _totalSentTodayCache = 0.0;
+  int _totalSentTransactionsTodayCache = 0;
+  double _highestSentPaymentCache = 0.0;
+
+  double _totalReceivedThisWeekCache = 0.0;
+  double _totalSentThisWeekCache = 0.0;
+  double _totalReceivedThisMonthCache = 0.0;
+  double _totalSentThisMonthCache = 0.0;
+
 
   // Shake / Sensors state
   DateTime? _lastShakeSpeakTime;
@@ -157,6 +195,7 @@ class PaymentProvider with ChangeNotifier {
 
   void setSelectedAccount(String? account) {
     _selectedAccount = account;
+    _updateCache();
     notifyListeners();
   }
 
@@ -167,146 +206,124 @@ class PaymentProvider with ChangeNotifier {
   double get speechRate => _speechRate;
   String get language => _language;
   int get nightModeStartHour => _nightModeStartHour;
+  int get nightModeStartMinute => _nightModeStartMinute;
   int get nightModeEndHour => _nightModeEndHour;
+  int get nightModeEndMinute => _nightModeEndMinute;
   
-  // Fix 1: Active check logic where 00:00 - 00:00 means disabled (no muting)
   bool get isNightModeActive {
-    if (_nightModeStartHour == 0 && _nightModeEndHour == 0) {
+    if (_nightModeStartHour == _nightModeEndHour && _nightModeStartMinute == _nightModeEndMinute) {
       return false;
     }
     final now = DateTime.now();
-    final hour = now.hour;
-    if (_nightModeStartHour <= _nightModeEndHour) {
-      return hour >= _nightModeStartHour && hour < _nightModeEndHour;
+    final currentMinutes = now.hour * 60 + now.minute;
+    final startMinutes = _nightModeStartHour * 60 + _nightModeStartMinute;
+    final endMinutes = _nightModeEndHour * 60 + _nightModeEndMinute;
+
+    if (startMinutes <= endMinutes) {
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
     } else {
-      return hour >= _nightModeStartHour || hour < _nightModeEndHour;
+      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
     }
   }
 
   Map<String, String> get supportedLanguages => _supportedLanguages;
   bool get isNotificationPermissionGranted => _isNotificationPermissionGranted;
   bool get isListenerPermissionGranted => _isListenerPermissionGranted;
-  bool get isWakeWordEnabled => _isWakeWordEnabled;
   bool get isBatteryOptimizationDisabled => _isBatteryOptimizationDisabled;
+  bool get batteryOptimizationSkipped => _batteryOptimizationSkipped;
   
   List<RawNotification> get rawFeed => _rawFeed;
   bool get isMethodChannelWorking => _isMethodChannelWorking;
   TtsStatus get ttsStatus => _ttsStatus;
-  double get balance => _balance;
+   double get balance => _balance;
+  String get voiceFilterAccount => _voiceFilterAccount;
+  bool get isLightMode => _isLightMode;
+
+  Future<void> toggleThemeMode(bool isLight) async {
+    _isLightMode = isLight;
+    try {
+      await _prefs.setBool('isLightMode', isLight);
+    } catch (e) {
+      debugPrint("[PaymentProvider] Saving theme mode failed: $e");
+    }
+    notifyListeners();
+  }
+
+  Future<void> setVoiceFilterAccount(String account) async {
+    _voiceFilterAccount = account;
+    try {
+      await _prefs.setString('voiceFilterAccount', account);
+    } catch (e) {
+      debugPrint("[PaymentProvider] Saving voice filter account failed: $e");
+    }
+    notifyListeners();
+  }
 
   PaymentRecord? get lastPayment => _lastPayment;
   
-  List<PaymentRecord> get _filteredHistory {
-    if (_selectedAccount == null) return _paymentHistory;
-    return _paymentHistory.where((p) => p.accountNumber == _selectedAccount).toList();
-  }
 
-  PaymentRecord? get lastReceivedPayment {
-    final rec = _filteredHistory.where((p) => !p.isSent);
-    return rec.isEmpty ? null : rec.first;
-  }
-  PaymentRecord? get lastSentPayment {
-    final sent = _filteredHistory.where((p) => p.isSent);
-    return sent.isEmpty ? null : sent.first;
-  }
+  PaymentRecord? get lastReceivedPayment => _lastReceivedPaymentCache;
+  PaymentRecord? get lastSentPayment => _lastSentPaymentCache;
 
-  List<PaymentRecord> get paymentHistory => _filteredHistory;
-  List<PaymentRecord> get receivedHistory => _filteredHistory.where((p) => !p.isSent).toList();
-  List<PaymentRecord> get sentHistory => _filteredHistory.where((p) => p.isSent).toList();
+  List<PaymentRecord> get paymentHistory => _filteredHistoryCache;
+  List<PaymentRecord> get receivedHistory => _receivedHistoryCache;
+  List<PaymentRecord> get sentHistory => _sentHistoryCache;
 
   // Statistics Getters - Received
-  double get totalReceivedToday {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => !p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day)
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
-
-  int get totalReceivedTransactionsToday {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => !p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day)
-        .length;
-  }
-
-  double get highestReceivedPayment {
-    final rec = _filteredHistory.where((p) => !p.isSent);
-    if (rec.isEmpty) return 0.0;
-    return rec.map((p) => p.amount).reduce((curr, next) => curr > next ? curr : next);
-  }
+  double get totalReceivedToday => _totalReceivedTodayCache;
+  int get totalReceivedTransactionsToday => _totalReceivedTransactionsTodayCache;
+  double get highestReceivedPayment => _highestReceivedPaymentCache;
 
   // Statistics Getters - Sent
-  double get totalSentToday {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day)
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
+  double get totalSentToday => _totalSentTodayCache;
+  int get totalSentTransactionsToday => _totalSentTransactionsTodayCache;
+  double get highestSentPayment => _highestSentPaymentCache;
 
-  int get totalSentTransactionsToday {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day)
-        .length;
-  }
+  double get totalReceivedThisWeek => _totalReceivedThisWeekCache;
+  double get totalSentThisWeek => _totalSentThisWeekCache;
+  double get totalReceivedThisMonth => _totalReceivedThisMonthCache;
+  double get totalSentThisMonth => _totalSentThisMonthCache;
 
-  double get highestSentPayment {
-    final sent = _filteredHistory.where((p) => p.isSent);
-    if (sent.isEmpty) return 0.0;
-    return sent.map((p) => p.amount).reduce((curr, next) => curr > next ? curr : next);
-  }
-
-  double get totalReceivedThisWeek {
-    final now = DateTime.now();
-    final startOfWeek = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - 1));
-    return _filteredHistory
-        .where((p) => !p.isSent && p.timestamp.isAfter(startOfWeek))
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
-
-  double get totalSentThisWeek {
-    final now = DateTime.now();
-    final startOfWeek = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - 1));
-    return _filteredHistory
-        .where((p) => p.isSent && p.timestamp.isAfter(startOfWeek))
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
-
-  double get totalReceivedThisMonth {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => !p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month)
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
-
-  double get totalSentThisMonth {
-    final now = DateTime.now();
-    return _filteredHistory
-        .where((p) => p.isSent && p.timestamp.year == now.year && p.timestamp.month == now.month)
-        .fold(0.0, (sum, p) => sum + p.amount);
-  }
-
-  PaymentProvider() {
+  PaymentProvider({SharedPreferences? prefs}) {
     debugPrint("[PaymentProvider] Constructor called. Initiating safe async startup...");
-    Future.microtask(() => _safeInit());
+    if (prefs != null) {
+      _prefs = prefs;
+      _isListening = _prefs.getBool('isListening') ?? false;
+      _isVoiceAlertEnabled = _prefs.getBool('isVoiceAlertEnabled') ?? true;
+      _speechRate = _prefs.getDouble('speechRate') ?? 0.3;
+      _language = _prefs.getString('language') ?? 'en-IN';
+      _nightModeStartHour = _prefs.getInt('nightModeStartHour') ?? 0;
+      _nightModeStartMinute = _prefs.getInt('nightModeStartMinute') ?? 0;
+      _nightModeEndHour = _prefs.getInt('nightModeEndHour') ?? 0;
+      _nightModeEndMinute = _prefs.getInt('nightModeEndMinute') ?? 0;
+      _voiceFilterAccount = _prefs.getString('voiceFilterAccount') ?? 'All Accounts';
+      _isLightMode = _prefs.getBool('isLightMode') ?? true;
+      _batteryOptimizationSkipped = _prefs.getBool('battery_optimization_skipped') ?? false;
+    }
+    Future.microtask(() => _safeInit(preloaded: prefs != null));
   }
 
-  Future<void> _safeInit() async {
-    debugPrint("[PaymentProvider] _safeInit started.");
+  Future<void> _safeInit({bool preloaded = false}) async {
+    debugPrint("[PaymentProvider] _safeInit started. Preloaded: $preloaded");
     try {
       // 1. SharedPreferences (load settings)
       try {
-        debugPrint("[PaymentProvider] Initializing SharedPreferences...");
-        _prefs = await SharedPreferences.getInstance();
-        _isListening = _prefs.getBool('isListening') ?? false;
-        _isVoiceAlertEnabled = _prefs.getBool('isVoiceAlertEnabled') ?? true;
-        _speechRate = _prefs.getDouble('speechRate') ?? 0.5;
-        _language = _prefs.getString('language') ?? 'en-IN';
-        
-        // Fix 1: Load night mode settings defaulting to 0
-        _nightModeStartHour = _prefs.getInt('nightModeStartHour') ?? 0;
-        _nightModeEndHour = _prefs.getInt('nightModeEndHour') ?? 0;
-        _isWakeWordEnabled = _prefs.getBool('isWakeWordEnabled') ?? false;
+        if (!preloaded) {
+          debugPrint("[PaymentProvider] Initializing SharedPreferences...");
+          _prefs = await SharedPreferences.getInstance();
+          _isListening = _prefs.getBool('isListening') ?? false;
+          _isVoiceAlertEnabled = _prefs.getBool('isVoiceAlertEnabled') ?? true;
+          _speechRate = _prefs.getDouble('speechRate') ?? 0.3;
+          _language = _prefs.getString('language') ?? 'en-IN';
+          
+          _nightModeStartHour = _prefs.getInt('nightModeStartHour') ?? 0;
+          _nightModeStartMinute = _prefs.getInt('nightModeStartMinute') ?? 0;
+          _nightModeEndHour = _prefs.getInt('nightModeEndHour') ?? 0;
+          _nightModeEndMinute = _prefs.getInt('nightModeEndMinute') ?? 0;
+          _voiceFilterAccount = _prefs.getString('voiceFilterAccount') ?? 'All Accounts';
+          _isLightMode = _prefs.getBool('isLightMode') ?? true;
+          _batteryOptimizationSkipped = _prefs.getBool('battery_optimization_skipped') ?? false;
+        }
 
         debugPrint("[PaymentProvider] Initializing Hive History...");
         final Box box = Hive.box('payments');
@@ -317,6 +334,7 @@ class PaymentProvider with ChangeNotifier {
         if (_paymentHistory.isNotEmpty) {
           _lastPayment = _paymentHistory.first;
         }
+        _updateCache();
         _balance = (box.get('balance', defaultValue: 0.0) as num).toDouble();
         debugPrint("[PaymentProvider] Settings, payment history, and balance loaded successfully from Hive. Current Balance: $_balance");
       } catch (e) {
@@ -333,6 +351,7 @@ class PaymentProvider with ChangeNotifier {
           try {
             if (call.method == 'onPaymentNotification') {
               final Map<dynamic, dynamic> args = call.arguments;
+              debugPrint("[PaymentProvider] MethodChannel onPaymentNotification arguments: $args");
               final double amount = (args['amount'] as num).toDouble();
               final String sender = args['sender'] as String? ?? 'Notification';
               final String appName = args['appName'] as String? ?? 'UPI App';
@@ -341,6 +360,7 @@ class PaymentProvider with ChangeNotifier {
               final String title = args['title'] as String? ?? '';
               final String body = args['body'] as String? ?? '';
               final bool isSent = args['isSent'] as bool? ?? false;
+              final String? notificationKey = args['notificationKey'] as String?;
 
               await handleNewPayment(
                 amount: amount,
@@ -351,9 +371,8 @@ class PaymentProvider with ChangeNotifier {
                 title: title,
                 body: body,
                 isSent: isSent,
+                notificationKey: notificationKey,
               );
-            } else if (call.method == 'onWakeWordDetected') {
-              _handleWakeWordDetected();
             } else if (call.method == 'replayLastPayment') {
               replayLastPayment();
             }
@@ -370,12 +389,6 @@ class PaymentProvider with ChangeNotifier {
       _isInitialized = true;
       debugPrint("[PaymentProvider] State set to initialized = true. Rendering will unlock.");
       notifyListeners();
-
-      if (_isWakeWordEnabled) {
-        _channel.invokeMethod('startWakeWord').catchError((e) {
-          debugPrint("Failed to start wake word: $e");
-        });
-      }
 
       // 3. Initialize TTS asynchronously in the background
       _initTtsAsync();
@@ -533,6 +546,15 @@ class PaymentProvider with ChangeNotifier {
     await checkPermissions();
   }
 
+  Future<void> openBatteryOptimizationSettings() async {
+    try {
+      await _channel.invokeMethod('openBatteryOptimizationSettings');
+    } on PlatformException catch (e) {
+      debugPrint('Failed to open battery optimization settings: ${e.message}');
+    }
+    await checkPermissions();
+  }
+
   Future<void> toggleListening(bool value) async {
     _isListening = value;
     try {
@@ -549,21 +571,6 @@ class PaymentProvider with ChangeNotifier {
       await _prefs.setBool('isVoiceAlertEnabled', _isVoiceAlertEnabled);
     } catch (e) {
       debugPrint("[PaymentProvider] Saving voice alert state failed: $e");
-    }
-    notifyListeners();
-  }
-
-  Future<void> toggleWakeWord(bool value) async {
-    _isWakeWordEnabled = value;
-    try {
-      await _prefs.setBool('isWakeWordEnabled', value);
-      if (value) {
-        await _channel.invokeMethod('startWakeWord');
-      } else {
-        await _channel.invokeMethod('stopWakeWord');
-      }
-    } catch (e) {
-      debugPrint("[PaymentProvider] Saving wake word state failed: $e");
     }
     notifyListeners();
   }
@@ -592,28 +599,30 @@ class PaymentProvider with ChangeNotifier {
     }
   }
 
-  Future<void> setNightModeStartHour(int hour) async {
+  Future<void> setNightModeStartTime(int hour, int minute) async {
     _nightModeStartHour = hour;
+    _nightModeStartMinute = minute;
     try {
       await _prefs.setInt('nightModeStartHour', hour);
+      await _prefs.setInt('nightModeStartMinute', minute);
     } catch (e) {
-      debugPrint("[PaymentProvider] Applying night mode start hour failed: $e");
+      debugPrint("[PaymentProvider] Applying night mode start time failed: $e");
     }
     notifyListeners();
   }
 
-  Future<void> setNightModeEndHour(int hour) async {
+  Future<void> setNightModeEndTime(int hour, int minute) async {
     _nightModeEndHour = hour;
+    _nightModeEndMinute = minute;
     try {
       await _prefs.setInt('nightModeEndHour', hour);
+      await _prefs.setInt('nightModeEndMinute', minute);
     } catch (e) {
-      debugPrint("[PaymentProvider] Applying night mode end hour failed: $e");
+      debugPrint("[PaymentProvider] Applying night mode end time failed: $e");
     }
     notifyListeners();
   }
 
-  final Set<String> _seenFingerprints = {};
-  String _currentDateStr = "";
 
   Future<void> handleNewPayment({
     required double amount,
@@ -624,6 +633,7 @@ class PaymentProvider with ChangeNotifier {
     required String title,
     required String body,
     required bool isSent,
+    String? notificationKey,
   }) async {
     if (!_isListening) {
       debugPrint("[PaymentProvider] Listening is paused. Ignoring raw notification.");
@@ -636,10 +646,19 @@ class PaymentProvider with ChangeNotifier {
       return;
     }
 
-    final parsed = parsePayment(body);
+    var parsed = parsePayment(body);
     if (parsed == null) {
-      _restoreVolume();
-      return;
+      if (amount > 0.0) {
+        parsed = ParsedPayment(
+          type: isSent ? 'outgoing' : 'incoming',
+          amount: amount,
+          accountNumber: null,
+          upiRef: null,
+        );
+      } else {
+        _restoreVolume();
+        return;
+      }
     }
 
     final actualAmount = parsed.amount > 0.0 ? parsed.amount : amount;
@@ -647,29 +666,70 @@ class PaymentProvider with ChangeNotifier {
     final finalAppName = appName == 'UPI App' ? 'UPI' : appName;
 
     final now = DateTime.now();
-    final dateStr = now.toIso8601String().substring(0, 10);
-    
-    if (_currentDateStr != dateStr) {
-      _seenFingerprints.clear();
-      _currentDateStr = dateStr;
+
+    final String typeStr = isSent ? 'debited' : 'credited';
+    String accSuffix = '';
+    if (parsed.accountNumber != null && parsed.accountNumber!.isNotEmpty) {
+      final acc = parsed.accountNumber!;
+      accSuffix = acc.length > 4 ? acc.substring(acc.length - 4) : acc;
+    }
+    final fingerprint = "${actualAmount}_${typeStr}_$accSuffix";
+
+    // Deduplication check (history + balance + TTS)
+    bool isDuplicate = false;
+    if (parsed.upiRef != null && parsed.upiRef!.isNotEmpty && _seenUpiRefs.contains(parsed.upiRef)) {
+      isDuplicate = true;
+      debugPrint("Duplicate suppressed (history+balance+TTS): ref=${parsed.upiRef}");
     }
 
-    // High fidelity deduplication fingerprint (amount + party/sender + type + date)
-    final fingerprint = "${actualAmount}_${resolvedSender}_${isSent ? 'sent' : 'received'}_$dateStr";
-    if (_seenFingerprints.contains(fingerprint)) {
-      debugPrint("[PaymentProvider] Duplicate fingerprint for today: $fingerprint. Dropping.");
+    if (!isDuplicate && notificationKey != null && _seenNotificationKeys.containsKey(notificationKey)) {
+      if (_seenNotificationKeys[notificationKey] == fingerprint) {
+        isDuplicate = true;
+        debugPrint("Duplicate suppressed (history+balance+TTS): acct=$accSuffix, amount=${actualAmount.toStringAsFixed(0)}");
+      }
+    }
+
+    if (!isDuplicate && _seenFingerprints.containsKey(fingerprint)) {
+      final lastSeen = _seenFingerprints[fingerprint]!;
+      if (now.difference(lastSeen).inSeconds <= 15) {
+        isDuplicate = true;
+        debugPrint("Duplicate suppressed (history+balance+TTS): acct=$accSuffix, amount=${actualAmount.toStringAsFixed(0)}");
+      }
+    }
+
+    if (isDuplicate) {
       _restoreVolume();
       return;
     }
-    _seenFingerprints.add(fingerprint);
+
+    // Record deduplication context for future notifications
+    _seenFingerprints[fingerprint] = now;
+    if (notificationKey != null) {
+      _seenNotificationKeys[notificationKey] = fingerprint;
+    }
+    if (parsed.upiRef != null && parsed.upiRef!.isNotEmpty) {
+      _seenUpiRefs.add(parsed.upiRef!);
+    }
 
     final speech = _getSpeechString(actualAmount, isSent ? 'outgoing' : 'incoming', finalAppName, resolvedSender);
     
+    bool shouldSpeak = true;
+    if (!isSent && _voiceFilterAccount != 'All Accounts') {
+      final paymentAcc = parsed.accountNumber ?? 'Unknown';
+      if (paymentAcc != _voiceFilterAccount) {
+        shouldSpeak = false;
+        debugPrint("[PaymentProvider] Voice filter matches specific account ($_voiceFilterAccount), but payment is from ($paymentAcc). Silently ignoring TTS.");
+      }
+    }
+
     if (isNightModeActive) {
       debugPrint("[PaymentProvider] Night mode is active. Skipping TTS.");
-    } else if (_isVoiceAlertEnabled) {
-      _boostVolume();
-      _flutterTts.speak(speech);
+    } else if (_isVoiceAlertEnabled && shouldSpeak) {
+      Future.delayed(ttsAnnouncementDelay, () async {
+        debugPrint("[PaymentProvider] TTS triggered: source=notification_listener, fingerprint=$fingerprint, speech='$speech'");
+        _boostVolume();
+        await _flutterTts.speak(speech);
+      });
     }
 
     // Live Notification Feed logger
@@ -721,16 +781,19 @@ class PaymentProvider with ChangeNotifier {
     }
 
     _updateHomeWidget();
+    _updateCache();
     notifyListeners();
   }
 
   Future<void> replayLastPayment() async {
     if (_lastPayment != null) {
       debugPrint("[PaymentProvider] Replaying last payment...");
+      debugPrint("[PaymentProvider] TTS triggered: source=replay_last_payment, text='${_lastPayment!.rawText}'");
       _boostVolume();
       await _flutterTts.speak(_lastPayment!.rawText);
     } else {
       debugPrint("[PaymentProvider] No payment to replay.");
+      debugPrint("[PaymentProvider] TTS triggered: source=replay_last_payment_failed");
       await _flutterTts.speak("No recent payments detected");
     }
   }
@@ -759,34 +822,34 @@ class PaymentProvider with ChangeNotifier {
     switch (_language) {
       case 'hi-IN':
         return isIncoming
-            ? "$sender से $appName के माध्यम से $formattedAmount रुपये प्राप्त हुए"
-            : "$sender को $appName के माध्यम से $formattedAmount रुपये भेजे गए";
+            ? "आपको $formattedAmount रुपये मिले"
+            : "आपने $formattedAmount रुपये भेजे";
       case 'ta-IN':
         return isIncoming
-            ? "$sender இடமிருந்து $appName வழியாக $formattedAmount ரூபாய் கிடைத்தது"
-            : "$sender க்கு $appName வழியாக $formattedAmount ரூபாய் அனுப்பினோம்";
+            ? "உங்களுக்கு $formattedAmount ரூபாய் கிடைத்தது"
+            : "நீங்கள் $formattedAmount ரூபாய் அனுப்பினீர்கள்";
       case 'te-IN':
         return isIncoming
-            ? "$sender నుండి $appName ద్వారా $formattedAmount రూపాయలు వచ్చాయి"
-            : "$sender కి $appName ద్వారా $formattedAmount రూపాయలు పంపబడ్డాయి";
+            ? "మీకు $formattedAmount రూపాయలు వచ్చాయి"
+            : "మీరు $formattedAmount రూపాయలు పంపారు";
       case 'kn-IN':
         return isIncoming
-            ? "$sender ರಿಂದ $appName ಮೂಲಕ $formattedAmount ರೂಪಾಯಿ ಬಂದಿದೆ"
-            : "$sender ಗೆ $appName ಮೂಲಕ $formattedAmount ರೂಪಾಯಿ ಕಳಿಸಲಾಗಿದೆ";
+            ? "ನಿಮಗೆ $formattedAmount ರೂಪಾಯಿ ಬಂದಿದೆ"
+            : "ನೀವು $formattedAmount ರೂಪಾಯಿ ಕಳಿಸಿದ್ದೀರಿ";
       case 'ml-IN':
         return isIncoming
-            ? "$sender-ൽ നിന്ന് $appName വഴി $formattedAmount രൂപ ലഭിച്ചു"
-            : "$sender-ലേക്ക് $appName വഴി $formattedAmount രൂപ അയച്ചു";
+            ? "നിങ്ങൾക്ക് $formattedAmount രൂപ ലഭിച്ചു"
+            : "നിങ്ങൾ $formattedAmount രൂപ അയച്ചു";
       case 'bn-IN':
         return isIncoming
-            ? "$sender এর থেকে $appName এর মাধ্যমে $formattedAmount টাকা পাওয়া গেছে"
-            : "$sender কে $appName এর মাধ্যমে $formattedAmount টাকা পাঠানো হয়েছে";
+            ? "আপনি $formattedAmount টাকা পেয়েছেন"
+            : "আপনি $formattedAmount টাকা পাঠিয়েছেন";
       case 'en-IN':
       default:
         final word = amount == 1.0 ? "rupee" : "rupees";
         return isIncoming
-            ? "Received $formattedAmount $word via $appName from $sender"
-            : "Sent $formattedAmount $word via $appName to $sender";
+            ? "You received $formattedAmount $word"
+            : "You sent $formattedAmount $word";
     }
   }
 
@@ -797,19 +860,25 @@ class PaymentProvider with ChangeNotifier {
   }
 
   Future<void> speakPaymentAmount(double amount, bool isSent) async {
+    if (isNightModeActive) {
+      debugPrint("[PaymentProvider] Night mode is active. Skipping manual/tap-to-speak TTS.");
+      return;
+    }
     final speech = _getSpeechString(amount, isSent ? 'outgoing' : 'incoming', 'UPI', 'User');
     _boostVolume();
     await _flutterTts.speak(speech);
   }
 
   Future<void> testTTS(bool isSent) async {
-    final speech = _getSpeechString(100.0, 'incoming', 'GPay', 'Tester');
+    final speech = _getSpeechString(100.0, isSent ? 'outgoing' : 'incoming', 'GPay', 'Tester');
+    debugPrint("[PaymentProvider] TTS triggered: source=test_tts, speech='$speech'");
     _boostVolume();
     _flutterTts.speak(speech);
   }
 
   Future<void> testVoice() async {
     final speech = _getSpeechString(100.0, 'incoming', 'GPay', 'Tester');
+    debugPrint("[PaymentProvider] TTS triggered: source=test_voice, speech='$speech'");
     _boostVolume();
     _flutterTts.speak(speech);
   }
@@ -825,14 +894,14 @@ class PaymentProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  void _handleWakeWordDetected() {
-    debugPrint("[PaymentProvider] Wake word detected!");
-    if (_lastPayment != null) {
-      _boostVolume();
-      _flutterTts.speak(_lastPayment!.rawText);
-    } else {
-      _flutterTts.speak("No recent transactions found");
+  Future<void> skipBatteryOptimization() async {
+    _batteryOptimizationSkipped = true;
+    try {
+      await _prefs.setBool('battery_optimization_skipped', true);
+    } catch (e) {
+      debugPrint("[PaymentProvider] Saving battery optimization skip failed: $e");
     }
+    notifyListeners();
   }
 
   Future<void> _boostVolume() async {
@@ -867,6 +936,7 @@ class PaymentProvider with ChangeNotifier {
     if (_lastShakeSpeakTime != null && now.difference(_lastShakeSpeakTime!).inSeconds < 3) return;
     _lastShakeSpeakTime = now;
 
+    debugPrint("[PaymentProvider] TTS triggered: source=shake_to_replay, text='${_lastPayment!.rawText}'");
     _boostVolume();
     _flutterTts.speak(_lastPayment!.rawText);
   }
@@ -917,6 +987,47 @@ class PaymentProvider with ChangeNotifier {
     } catch (e) {
       debugPrint("[PaymentProvider] Clearing history cache failed: $e");
     }
+    _updateCache();
     notifyListeners();
+  }
+
+  void _updateCache() {
+    final now = DateTime.now();
+    
+    // 1. Filtered history list
+    if (_selectedAccount == null || _selectedAccount == 'All Accounts') {
+      _filteredHistoryCache = List.from(_paymentHistory);
+    } else {
+      _filteredHistoryCache = _paymentHistory.where((p) => p.accountNumber == _selectedAccount).toList();
+    }
+
+    // 2. Received and Sent history caches
+    _receivedHistoryCache = _filteredHistoryCache.where((p) => !p.isSent).toList();
+    _sentHistoryCache = _filteredHistoryCache.where((p) => p.isSent).toList();
+
+    // 3. Last payment cache
+    _lastReceivedPaymentCache = _receivedHistoryCache.isEmpty ? null : _receivedHistoryCache.first;
+    _lastSentPaymentCache = _sentHistoryCache.isEmpty ? null : _sentHistoryCache.first;
+
+    // 4. Statistics - Received
+    final todayReceived = _receivedHistoryCache.where((p) => p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day).toList();
+    _totalReceivedTodayCache = todayReceived.fold(0.0, (sum, p) => sum + p.amount);
+    _totalReceivedTransactionsTodayCache = todayReceived.length;
+    _highestReceivedPaymentCache = _receivedHistoryCache.isEmpty ? 0.0 : _receivedHistoryCache.map((p) => p.amount).reduce((curr, next) => curr > next ? curr : next);
+
+    // 5. Statistics - Sent
+    final todaySent = _sentHistoryCache.where((p) => p.timestamp.year == now.year && p.timestamp.month == now.month && p.timestamp.day == now.day).toList();
+    _totalSentTodayCache = todaySent.fold(0.0, (sum, p) => sum + p.amount);
+    _totalSentTransactionsTodayCache = todaySent.length;
+    _highestSentPaymentCache = _sentHistoryCache.isEmpty ? 0.0 : _sentHistoryCache.map((p) => p.amount).reduce((curr, next) => curr > next ? curr : next);
+
+    // 6. Statistics - Weekly
+    final startOfWeek = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - 1));
+    _totalReceivedThisWeekCache = _receivedHistoryCache.where((p) => p.timestamp.isAfter(startOfWeek)).fold(0.0, (sum, p) => sum + p.amount);
+    _totalSentThisWeekCache = _sentHistoryCache.where((p) => p.timestamp.isAfter(startOfWeek)).fold(0.0, (sum, p) => sum + p.amount);
+
+    // 7. Statistics - Monthly
+    _totalReceivedThisMonthCache = _receivedHistoryCache.where((p) => p.timestamp.year == now.year && p.timestamp.month == now.month).fold(0.0, (sum, p) => sum + p.amount);
+    _totalSentThisMonthCache = _sentHistoryCache.where((p) => p.timestamp.year == now.year && p.timestamp.month == now.month).fold(0.0, (sum, p) => sum + p.amount);
   }
 }
